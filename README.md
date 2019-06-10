@@ -90,7 +90,7 @@ extends_documentation_fragment: ovirt
       - passive
 ```
 
-# Return Values
+## Return Values
 ```
 id:
     description: ID of the SR-IOV host NIC managed.
