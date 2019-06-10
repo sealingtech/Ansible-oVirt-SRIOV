@@ -44,10 +44,8 @@ options:
         description:
             - "List of labels to add to the specific C(networks). You I(cannot) add labels when 
                C(allowed_networks) is set to I(all). C(labels) is ignored when C(allowed_networks)
-               is set to I(all). 
-    
-            
-               
+               is set to I(all)."
+
 extends_documentation_fragment: ovirt
 '''
 
@@ -110,7 +108,7 @@ network_ids:
                  when allowed_networks is set to all.
     returned: On success if host NIC is SR-IOV enabled.
     type: list
-    sample: 7de90f31-222c-436c-a1ca-7e655bd5b60c
+    sample: a0e60ec0-67a0-4209-a5d1-e7e563a061b5
 labels:
     description: Label names given to the specific networks allowed to create VFs from the interface.
                  Will return None if no labels were given, or allowed_networks is set to all.
@@ -139,23 +137,10 @@ from ansible.module_utils.ovirt import (
 
 class SRIOVModule(BaseModule):
 
-    def get_current_vf_config(self, nic_service):
-        # TODO - How do I get the HostNicVirtualFunctionsConfiguration ???
-        return True
+    def build_entity(self):
+        return otypes.HostNicVirtualFunctionsConfiguration()
 
-
-    def get_current_vf_network_ids(self, nic_service):
-        # Get currently allowed network ids
-        networks_list = nic_service.virtual_function_allowed_networks_service().list()
-        network_ids = []
-        if networks_list:
-            for network in networks_list:
-                network_ids.append(network.id)
-
-        return network_ids
-
-    def get_vf_network_ids(self, networks_service):
-        # Get ids of the passed networks
+    def get_network_ids(self, networks_service):
         networks = self._module.params['networks']
         network_ids = []
         if networks:
@@ -164,8 +149,22 @@ class SRIOVModule(BaseModule):
 
         return network_ids
 
+    def get_vf_config(self, nics_service):
+        interface = self._module.params['interface']
+        nic_with_attributes = [e for e in nics_service.list(headers={'All-content': True}) if e.name == interface]
+
+        return nic_with_attributes[0].virtual_functions_configuration
+
+    def get_vf_network_ids(self, nic_service):
+        networks_list = nic_service.virtual_function_allowed_networks_service().list()
+        network_ids = []
+        if networks_list:
+            for network in networks_list:
+                network_ids.append(network.id)
+
+        return network_ids
+
     def get_vf_labels(self, nic_service):
-        # Get current vf labels
         vf_labels = nic_service.virtual_function_allowed_labels_service().list()
         labels = []
         if vf_labels:
@@ -174,45 +173,46 @@ class SRIOVModule(BaseModule):
 
         return labels
 
-    def has_updates(self, nic_service, networks_service):
+    def has_updates(self, networks_service, nics_service, nic_service):
         update = False
         allowed_networks = self._module.params['allowed_networks']
-        networks = self._module.params['networks']
         vfs = self._module.params['vfs']
-        vf_labels = self._module.params['vf_labels']
-        current_vf_config = get_current_vf_config(self, nic_service)
+        vf_labels = self._module.params['labels']
+        vf_config = self.get_vf_config(nics_service)
 
-        # Check if allowed_networks needs updating and the specific networks if not 'all'
+        # Check if allowed_networks needs updating
         if allowed_networks:
             all_networks = True if allowed_networks == 'all' else False
 
-            if all_networks != current_vf_config.all_networks_allowed:
+            if all_networks != vf_config.all_networks_allowed:
                 update = True
 
+            # Check if specific networks need updating
             if not all_networks:
-                current_networks = get_current_vf_network_ids(nic_service)
-                desired_networks = get_vf_network_ids(networks_service, networks)
-                if sorted(current_networks) != sorted(desired_networks):
+                existing_networks = self.get_vf_network_ids(nic_service)
+                desired_networks = self.get_network_ids(networks_service)
+                if sorted(existing_networks) != sorted(desired_networks):
                     update = True
 
         # Check if labels need updating
         if vf_labels and allowed_networks == 'specific':
-            vf_existing_labels = get_vf_labels(nic_service)
+            vf_existing_labels = self.get_vf_labels(nic_service)
             if sorted(vf_labels) != sorted(vf_existing_labels):
                 update = True
 
         # Check if the number of vfs needs updating
         if vfs:
-            if vfs != current_vf_config.number_of_virtual_functions:
+            if vfs != vf_config.number_of_virtual_functions:
                 update = True
 
         # Finally, return result
         return update
 
-    def update_labels(self, nic_service):
-        vf_labels = self._module.params['vf_labels']
+    def update_vf_labels(self, nic_service):
+        vf_labels = self._module.params['labels']
         vf_labels_service = nic_service.virtual_function_allowed_labels_service()
-        vf_existing_labels = get_vf_labels(nic_service)
+        vf_existing_labels = self.get_vf_labels(nic_service)
+        changed = False
 
         # Remove any unwanted labels
         remove_labels = list(set(vf_existing_labels).difference(vf_labels))
@@ -235,13 +235,12 @@ class SRIOVModule(BaseModule):
         if changed:
             self.changed = True
 
-
-
-    def update_allowed_networks(self, nic_service, networks_service):
+    def update_vf_allowed_networks(self, nics_service, nic_service):
         all_networks = True if self._module.params['allowed_networks'] == 'all' else False
-        current_vf_config = get_current_vf_config(self, nic_service)
+        vf_config = self.get_vf_config(nics_service)
+        changed = False
 
-        if all_networks != current_vf_config.all_networks_allowed:
+        if all_networks != vf_config.all_networks_allowed:
             vf_config = otypes.HostNicVirtualFunctionsConfiguration(
                 all_networks_allowed=all_networks
             )
@@ -251,11 +250,11 @@ class SRIOVModule(BaseModule):
         if changed:
             self.changed = True
 
-    def update_vf_networks(self, nic_service, networks_service):
-        networks = self._module.params['networks']
+    def update_vf_networks(self, networks_service, nic_service):
         vf_allowed_networks_service = nic_service.virtual_function_allowed_networks_service()
-        vf_existing_networks = get_current_vf_network_ids(nic_service)
-        vf_desired_networks = get_vf_network_ids(networks_service, networks)
+        vf_existing_networks = self.get_vf_network_ids(nic_service)
+        vf_desired_networks = self.get_network_ids(networks_service)
+        changed = False
 
         # Remove any unwanted networks
         remove_networks = list(set(vf_existing_networks).difference(vf_desired_networks))
@@ -274,11 +273,12 @@ class SRIOVModule(BaseModule):
         if changed:
             self.changed = True
 
-    def update_number_of_vfs(self, nic_service):
-        current_vf_config = get_current_vf_config(self, nic_service)
+    def update_number_of_vfs(self, nics_service, nic_service):
+        vf_config = self.get_vf_config(nics_service)
         vfs = self._module.params['vfs']
+        changed = False
 
-        if vfs != current_vf_config.number_of_virtual_functions:
+        if vfs != vf_config.number_of_virtual_functions:
             vf_config = otypes.HostNicVirtualFunctionsConfiguration(
                 number_of_virtual_functions=vfs,
             )
@@ -297,7 +297,7 @@ def main():
         vfs=dict(default=None, type='int'),
         allowed_networks=dict(
             choices=['all', 'specific'],
-            default='None',
+            default=None,
         ),
         networks=dict(default=None, type='list'),
         labels=dict(default=None, type='list'),
@@ -331,6 +331,7 @@ def main():
         interface = module.params['interface']
         vfs = module.params['vfs']
         allowed_networks = module.params['allowed_networks']
+        networks = module.params['networks']
         labels = module.params['labels']
         
         # Host services
@@ -346,25 +347,30 @@ def main():
         else:
             nic_service = nics_service.nic_service(nic.id)
 
-        if sriov_module.has_updates(nic_service, networks_service):
+        # Verify given networks exist
+        if networks:
+            for network in networks:
+                if search_by_name(networks_service, network) is None:
+                    raise Exception("Network '%s' was not found." % network)
+
+        # Check for and apply updates
+        if sriov_module.has_updates(networks_service, nics_service, nic_service):
             if allowed_networks:
-                sriov_module.update_allowed_networks(nic_service, networks_service)
+                sriov_module.update_vf_allowed_networks(nics_service, nic_service)
                 if allowed_networks == 'specific':
-                    sriov_module.update_vf_networks(nic_service, networks_service)
+                    sriov_module.update_vf_networks(networks_service, nic_service)
                     if labels:
-                        sriov_module.update_labels(nic_service)
+                        sriov_module.update_vf_labels(nic_service)
             if vfs:
                 sriov_module.update_number_of_vfs(nic_service)
 
-        # TODO: Finalize this once I can get config
-        vf_config = sriov_module.get_current_vf_config(nic_service)
+        vf_config = sriov_module.get_vf_config(nics_service)
 
         module.exit_json(**{
             'changed': sriov_module.changed,
             'id': nic.id if nic else None,
-            'sriov_config': get_dict_of_struct(vf),
-            'allowed_networks': sriov_module.get_current_vf_config(nic_service).all_allowed_networks,
-            'network_ids': sriov_module.get_current_vf_network_ids(nic_service),
+            'sriov_config': get_dict_of_struct(vf_config),
+            'network_ids': sriov_module.get_vf_network_ids(nic_service),
             'labels': sriov_module.get_vf_labels(nic_service),
         })
 
@@ -373,8 +379,6 @@ def main():
         module.fail_json(msg=str(e), exception=traceback.format_exc())
     finally:
         connection.close(logout=auth.get('token') is None)
-        
-        
         
 if __name__ == "__main__":
     main()
