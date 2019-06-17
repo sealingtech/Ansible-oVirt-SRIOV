@@ -362,7 +362,7 @@ def main():
                     if labels:
                         sriov_module.update_vf_labels(nic_service)
             if vfs:
-                sriov_module.update_number_of_vfs(nic_service)
+                sriov_module.update_number_of_vfs(nics_service, nic_service)
 
         vf_config = sriov_module.get_vf_config(nics_service)
 
