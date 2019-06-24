@@ -204,7 +204,7 @@ class SRIOVModule(BaseModule):
         if vfs:
             if vfs != vf_config.number_of_virtual_functions:
                 update = True
-
+                
         # Finally, return result
         return update
 
@@ -228,7 +228,7 @@ class SRIOVModule(BaseModule):
                 vf_labels_service.add(otypes.NetworkLabel(
                     id=label,
                     host_nic=nic_service.get()
-                )
+                    )
                 )
             changed = True
 
